@@ -1,0 +1,12 @@
+services:
+  sudo-approve:
+    build: .
+    container_name: sudo-approve
+    restart: unless-stopped
+    ports:
+      - "192.168.1.253:8490:8000"
+    environment:
+      RP_ID: sudo-approve.midgardnet.org
+      DB_PATH: /data/sudo-approve.db
+    volumes:
+      - ./data:/data

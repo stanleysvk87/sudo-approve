@@ -1,0 +1,48 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Syntax check (app.py)
+        run: python -m py_compile app.py
+      - name: shellcheck (PAM script)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq shellcheck
+          shellcheck pam/sudo-remote-approve.sh
+
+  # Separate from lint on purpose: that checks "does the code parse and pass
+  # static bash checks", this checks "do the pinned dependencies have known
+  # CVEs" -- different question, different failure meaning.
+  security-audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: "pip"
+          cache-dependency-path: requirements.txt
+      - name: pip-audit
+        run: |
+          pip install pip-audit
+          pip-audit -r requirements.txt
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Prepare a CI-only .env
+        run: cp .env.example .env
+      - run: docker compose config -q
+      - run: docker compose build

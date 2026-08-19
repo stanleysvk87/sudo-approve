@@ -14,9 +14,6 @@ from fido2.webauthn import (
     AttestedCredentialData,
 )
 from fido2.utils import websafe_encode
-from fido2.features import webauthn_json_mapping
-
-webauthn_json_mapping.enabled = True
 
 RP_ID = os.environ.get("RP_ID", "sudo-approve.midgardnet.org")
 RP_NAME = "Homelab Sudo Approve"

@@ -24,10 +24,9 @@ fi
 # shellcheck disable=SC1090
 source "$NTFY_CREDS"
 
-resp=$(curl -s -m 5 -X POST "$BACKEND/api/challenge" \
+if ! resp=$(curl -s -m 5 -X POST "$BACKEND/api/challenge" \
   -H "Content-Type: application/json" \
-  -d "{\"host\":\"$HOST\",\"command\":\"$CMD\"}")
-if [ $? -ne 0 ]; then
+  -d "{\"host\":\"$HOST\",\"command\":\"$CMD\"}"); then
   echo "$(date -Is) chyba: nepodarilo sa vytvorit challenge (backend nedostupny)" >> "$LOG"
   exit 1
 fi
@@ -43,14 +42,13 @@ fi
 echo "$(date -Is) challenge vytvoreny: $challenge_id" >> "$LOG"
 
 NTFY_PUBLIC_URL="https://ntfy.midgardnet.org"
-ntfy_out=$(curl -s -f -m 10 -X POST "${NTFY_PUBLIC_URL}/${NTFY_TOPIC}" \
+if ! ntfy_out=$(curl -s -f -m 10 -X POST "${NTFY_PUBLIC_URL}/${NTFY_TOPIC}" \
   -H "Authorization: Bearer ${NTFY_REPORTER_TOKEN}" \
   -H "Title: sudo na $HOST" \
   -H "Click: $url" \
   -H "Priority: urgent" \
   -H "Tags: warning" \
-  -d "$CMD" 2>&1)
-if [ $? -ne 0 ]; then
+  -d "$CMD" 2>&1); then
   echo "$(date -Is) chyba: ntfy push zlyhal: $ntfy_out" >> "$LOG"
   exit 1
 fi

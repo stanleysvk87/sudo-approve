@@ -8,5 +8,6 @@ services:
     environment:
       RP_ID: sudo-approve.midgardnet.org
       DB_PATH: /data/sudo-approve.db
+      SETUP_TOKEN: ${SETUP_TOKEN}
     volumes:
       - ./data:/data

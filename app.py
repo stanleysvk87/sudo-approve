@@ -5,7 +5,7 @@ import time
 from enum import Enum
 from pathlib import Path
 
-from fastapi import FastAPI, Request, HTTPException
+from fastapi import FastAPI, Request, HTTPException, Query
 from fastapi.responses import HTMLResponse, JSONResponse
 from fido2.server import Fido2Server
 from fido2.webauthn import (
@@ -22,6 +22,7 @@ RP_ID = os.environ.get("RP_ID", "sudo-approve.midgardnet.org")
 RP_NAME = "Homelab Sudo Approve"
 DB_PATH = os.environ.get("DB_PATH", "/data/sudo-approve.db")
 CHALLENGE_TTL = 90  # sekund
+SETUP_TOKEN = os.environ.get("SETUP_TOKEN")  # povinne pre /register - pozri README
 
 Path(DB_PATH).parent.mkdir(parents=True, exist_ok=True)
 
@@ -94,10 +95,13 @@ button{font-size:18px;padding:14px 28px;border-radius:10px;border:none;backgroun
 #status{margin-top:24px;font-size:16px;white-space:pre-wrap;word-break:break-word}</style></head>
 <body>
 <h2>Registracia FIDO2 kluca</h2>
-<p>Zasun/pripoj kluc a stlac tlacidlo.</p>
+<p>Pomenuj poverenie (napr. "Idem Key" alebo "Face ID iPad"), zasun/pripoj kluc a stlac tlacidlo.</p>
+<input id="credname" type="text" placeholder="nazov poverenia" style="font-size:16px;padding:8px;width:80%;margin-bottom:12px">
+<br>
 <button onclick="register()">Zaregistrovat kluc</button>
 <div id="status"></div>
 <script>
+const TOKEN = "__TOKEN__";
 function b64url(buf) {
   return btoa(String.fromCharCode(...new Uint8Array(buf))).replace(/\\+/g,'-').replace(/\\//g,'_').replace(/=+$/,'');
 }
@@ -111,7 +115,7 @@ function unb64url(str) {
 }
 async function register() {
   document.getElementById('status').textContent = 'Cakam na dotyk kluca...';
-  const beginResp = await fetch('/api/register/begin', {method:'POST'});
+  const beginResp = await fetch('/api/register/begin?token=' + encodeURIComponent(TOKEN), {method:'POST'});
   const begin = await beginResp.json();
   const pub = begin.publicKey;
   pub.challenge = unb64url(pub.challenge);
@@ -131,12 +135,13 @@ async function register() {
     id: cred.id,
     rawId: b64url(cred.rawId),
     type: cred.type,
+    name: document.getElementById('credname').value || 'credential',
     response: {
       clientDataJSON: b64url(cred.response.clientDataJSON),
       attestationObject: b64url(cred.response.attestationObject),
     }
   };
-  const completeResp = await fetch('/api/register/complete', {
+  const completeResp = await fetch('/api/register/complete?token=' + encodeURIComponent(TOKEN), {
     method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)
   });
   if (completeResp.ok) {
@@ -149,16 +154,27 @@ async function register() {
 </body></html>"""
 
 
+def check_setup_token(token: str | None):
+    if not SETUP_TOKEN:
+        # bez nastaveneho SETUP_TOKEN je /register natvrdo zakazany,
+        # nie tichou dohodou spolahnutou len na sietovy IP-allowlist
+        raise HTTPException(403, "SETUP_TOKEN nie je nastaveny na serveri")
+    if not token or not secrets.compare_digest(token, SETUP_TOKEN):
+        raise HTTPException(403, "neplatny alebo chybajuci token")
+
+
 @app.get("/register", response_class=HTMLResponse)
-def register_page():
-    return REGISTER_PAGE
+def register_page(token: str = Query(default="")):
+    check_setup_token(token)
+    return REGISTER_PAGE.replace("__TOKEN__", token)
 
 
 _reg_states = {}
 
 
 @app.post("/api/register/begin")
-def register_begin():
+def register_begin(token: str = Query(default="")):
+    check_setup_token(token)
     existing = stored_credentials()
     user = PublicKeyCredentialUserEntity(
         id=b"stanley", name="stanley", display_name="Stanislav"
@@ -174,7 +190,8 @@ def register_begin():
 
 
 @app.post("/api/register/complete")
-async def register_complete(request: Request):
+async def register_complete(request: Request, token: str = Query(default="")):
+    check_setup_token(token)
     body = await request.json()
     entry = _reg_states.pop(body["state_id"], None)
     if not entry:
@@ -186,7 +203,7 @@ async def register_complete(request: Request):
     conn = db()
     conn.execute(
         "INSERT INTO credentials (credential_data, name, created_at) VALUES (?,?,?)",
-        (bytes(auth_data.credential_data), "idem-key", time.time()),
+        (bytes(auth_data.credential_data), body.get("name", "credential"), time.time()),
     )
     conn.commit()
     conn.close()
@@ -263,6 +280,8 @@ async def create_challenge(request: Request):
     body = await request.json()
     challenge_id = secrets.token_urlsafe(16)
     conn = db()
+    # priebezne cistenie starych zaznamov, aby tabulka nerastla neobmedzene
+    conn.execute("DELETE FROM challenges WHERE created_at < ?", (time.time() - 86400,))
     conn.execute(
         "INSERT INTO challenges (id, status, host, command, created_at) VALUES (?,?,?,?,?)",
         (challenge_id, "pending", body.get("host", "?"), body.get("command", "sudo"), time.time()),

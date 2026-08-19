@@ -118,6 +118,64 @@ requires knowing that token, not just being on the right subnet.
 This is a homelab project, not an audited security product. Read the code
 before trusting it with anything that matters.
 
+## The debugging story
+
+The build itself went fine. Getting it to work *reliably* was a proper
+detective story, and the ending is the best part: after a security review,
+a dependency upgrade, and a deep dive into PAM internals, the actual bug was
+fixed by turning Wi-Fi off and on again.
+
+In order:
+
+1. **"It's asking for a code or password."** First real end-to-end attempt
+   just skipped straight past the new step. Turned out `pam_exec`'s
+   `seteuid` option runs the script as `PAM_USER` — which for a `sudo` auth
+   transaction is `root`, not the invoking user. `$HOME` was unset, so
+   `$HOME/.config/ntfy/credentials.env` resolved to nothing and the script
+   died before it even tried the network. Fix: hardcode the path.
+
+2. **A "skip with a keypress" feature that made things worse, not better.**
+   Wanted a way to bail out of the 85-second wait early by pressing any key.
+   Implemented it with `read -t 2 < /dev/tty`. In the `pam_exec` context,
+   `/dev/tty` isn't a usable terminal, so `read` failed *instantly* instead
+   of timing out — the entire 85-second polling loop burned through in
+   under two seconds of wall-clock time, with zero real chance to approve
+   anything. Reverted to a plain `sleep`.
+
+3. **`ntfy` push silently failing.** The credentials file has
+   `NTFY_URL=http://127.0.0.1:8480` — correct for scripts running *on* the
+   ntfy host, meaningless on a different machine, where `127.0.0.1` means
+   itself. Hardcoded the public HTTPS URL in the script instead.
+
+4. **Going public forced a second look, which was worth it.** Before
+   opening the repo up, a proper re-read turned up a real gap:
+   `/register` had no auth of its own, just the network-level IP allowlist
+   — anyone on the LAN could have registered their own credential and
+   granted themselves sudo-approval power. Added a `SETUP_TOKEN` gate.
+   `pip-audit` on the same pass found 16 known CVEs sitting in `cryptography`
+   and `starlette` (transitive deps of `fido2`/`fastapi`) — pinned versions
+   were just old. Fixing it meant a `fido2` major-version bump (1.x → 2.x),
+   which dropped a feature flag the code depended on
+   (`webauthn_json_mapping`); everything else in the API was unchanged.
+   Re-verified the whole flow end-to-end afterward before trusting it.
+
+5. **"Notification shows up, app shows nothing."** Server-side, every
+   message was there, full content, no exceptions — checked the delivery
+   database directly. Root cause: self-hosted `ntfy` can't talk to Apple's
+   push service directly, so it forwards a *contentless* trigger through
+   `ntfy.sh` for privacy, and the app is supposed to fetch the real message
+   from the self-hosted server afterward. During a burst of rapid testing
+   (many approvals in a few minutes), iOS started throttling that
+   background fetch — the banner showed up, the content didn't. Spacing
+   requests out made it disappear.
+
+6. **The actual final bug: "Safari can't find the server."** DNS. The
+   domain only exists as a local Pi-hole record (never went into public
+   DNS on purpose), and the phone had it stuck on a stale/negative lookup
+   — quietly resolved by leaving it. Toggling Wi-Fi off and on forced a
+   fresh DNS query, and the entire flow worked cleanly on the very next
+   try. All that debugging, and the fix was the oldest trick in IT support.
+
 ## Known limitations
 
 - No cleanup of very old, never-approved challenge rows beyond a 24h purge

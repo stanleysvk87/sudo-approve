@@ -259,7 +259,7 @@ async function approve() {{
     }});
     if (completeResp.ok) {{
       document.getElementById('status').textContent = 'Schvalene.';
-      setTimeout(() => window.close(), 1200);
+      setTimeout(() => {{ window.location.href = 'shortcuts://run-shortcut?name=Open%20Termius'; }}, 600);
     }} else {{
       document.getElementById('status').textContent = 'Zlyhalo: ' + await completeResp.text();
     }}

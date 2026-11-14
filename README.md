@@ -91,6 +91,16 @@ and an auth token in whatever credentials file
 `pam/sudo-remote-approve.sh` reads — adjust the script for your own notifier
 if you use something else.
 
+### 3b. Credentials file (root only)
+
+The PAM script runs as **root** (`pam_exec seteuid` during a `sudo` auth = `PAM_USER` root). It must never
+source or execute anything the invoking user can change: a user-writable credentials file would let that user
+approve `sudo` without the second factor and run code as root. The script therefore reads
+`/etc/sudo-approve/ntfy.env` (must be `root:root 600`, otherwise it refuses) and only parses `KEY=value` lines
+(`NTFY_TOPIC`, `NTFY_REPORTER_TOKEN`, optional `RESOLVE_IP` to reach the backend by IP from other networks).
+The same rule applies to a TOTP fallback: keep `pam_google_authenticator` secrets outside the user's home
+(`secret=/etc/sudo-approve/totp/${USER} user=root`).
+
 ### 4. Wire it into PAM
 
 Add a line to `/etc/pam.d/sudo`, positioned wherever you want it tried

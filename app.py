@@ -259,7 +259,12 @@ async function approve() {{
     }});
     if (completeResp.ok) {{
       document.getElementById('status').textContent = 'Schvalene.';
-      setTimeout(() => {{ window.location.href = 'shortcuts://run-shortcut?name=Open%20Termius'; }}, 600);
+      // Otvorené z appky Midgardu (Eir, Mímir…): zavrieť a vrátiť sa späť. Inak Termius ako doteraz.
+      const zAppky = !!window.opener || new URLSearchParams(location.search).has('zavriet');
+      setTimeout(() => {{
+        if (zAppky) {{ window.close(); document.getElementById('status').textContent = 'Schvalene – mozes sa vratit spat.'; }}
+        else {{ window.location.href = 'shortcuts://run-shortcut?name=Open%20Termius'; }}
+      }}, 600);
     }} else {{
       document.getElementById('status').textContent = 'Zlyhalo: ' + await completeResp.text();
     }}

@@ -259,7 +259,7 @@ async function approve() {{
     }});
     if (completeResp.ok) {{
       document.getElementById('status').textContent = 'Schvalene.';
-      // Otvorené z appky Midgardu (Eir, Mímir…): zavrieť a vrátiť sa späť. Inak Termius ako doteraz.
+      // Opened from another app (window.opener or ?zavriet=1): close and return there. Otherwise open Termius as before.
       const zAppky = !!window.opener || new URLSearchParams(location.search).has('zavriet');
       setTimeout(() => {{
         if (zAppky) {{ window.close(); document.getElementById('status').textContent = 'Schvalene – mozes sa vratit spat.'; }}

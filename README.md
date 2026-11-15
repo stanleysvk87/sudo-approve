@@ -157,7 +157,10 @@ the signature does not check out, the script refuses and sends a loud alarm.
 One limit remains: the approval page shows the command as the backend tells
 it, so a compromised backend could display a harmless command for a request
 that is really something else – but only for a `sudo` someone actually typed
-on that machine. Tests: `python3 pam/test_verify.py`.
+on that machine. Tests: `python3 pam/test_verify.py` (verifier alone) and `python3 pam/test_e2e.py` (real
+backend + simulated passkey + verifier, including an attacker who adds a key to the backend's database, a
+backend that lies "approved", an approval moved to another sudo request and command-string injection; needs
+fastapi, httpx, fido2, cryptography).
 
 This is a homelab project, not an audited security product. Read the code
 before trusting it with anything that matters.

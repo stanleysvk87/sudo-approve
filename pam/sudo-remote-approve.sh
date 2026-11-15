@@ -8,6 +8,9 @@ set -u
 umask 077
 
 BACKEND="https://sudo-approve.midgardnet.org"
+# v2: the approval is verified HERE against pinned public keys (/etc/sudo-approve/credentials.json); the backend only
+# relays. A compromised backend can refuse, but never approve.
+VERIFY=/usr/local/bin/sudo-approve-verify
 HOST="$(hostname)"
 CMD="${SUDO_COMMAND:-sudo}"
 TIMEOUT=85
@@ -51,9 +54,20 @@ if [ -n "$RESOLVE_IP" ]; then
   RESOLVE=(--resolve "sudo-approve.midgardnet.org:443:$RESOLVE_IP" --resolve "ntfy.midgardnet.org:443:$RESOLVE_IP")
 fi
 
+if [ ! -x "$VERIFY" ]; then
+  echo "$(date -Is) chyba: $VERIFY chýba" >> "$LOG"
+  exit 1
+fi
+NONCE=$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')
+if ! CHAL=$(env -i SA_HOST="$HOST" SA_CMD="$CMD" SA_NONCE="$NONCE" "$VERIFY" challenge 2>>"$LOG"); then
+  echo "$(date -Is) chyba: challenge sa nedal vypočítať" >> "$LOG"
+  exit 1
+fi
+# JSON cez jq: príkaz s úvodzovkami nesmie rozbiť (ani doplniť) polia požiadavky
+body=$(jq -nc --arg h "$HOST" --arg c "$CMD" --arg ch "$CHAL" '{host:$h, command:$c, challenge:$ch}')
 if ! resp=$(curl -s -m 5 "${RESOLVE[@]}" -X POST "$BACKEND/api/challenge" \
   -H "Content-Type: application/json" \
-  -d "{\"host\":\"$HOST\",\"command\":\"$CMD\"}"); then
+  -d "$body"); then
   echo "$(date -Is) chyba: nepodarilo sa vytvorit challenge (backend nedostupny)" >> "$LOG"
   exit 1
 fi
@@ -89,9 +103,22 @@ elapsed=0
 while [ "$elapsed" -lt "$TIMEOUT" ]; do
   sleep "$POLL_INTERVAL"
   elapsed=$((elapsed + POLL_INTERVAL))
-  status=$(curl -s -m 5 "${RESOLVE[@]}" "$BACKEND/api/challenge/$challenge_id/status" 2>/dev/null | jq -r '.status // empty')
+  st_json=$(curl -s -m 5 "${RESOLVE[@]}" "$BACKEND/api/challenge/$challenge_id/status" 2>/dev/null)
+  status=$(printf '%s' "$st_json" | jq -r '.status // empty' 2>/dev/null)
   case "$status" in
-    approved) exit 0 ;;
+    approved)
+      # the backend's word is not enough: check the authenticator's signature ourselves
+      if printf '%s' "$st_json" | env -i SA_HOST="$HOST" SA_CMD="$CMD" SA_NONCE="$NONCE" "$VERIFY" check 2>>"$LOG"; then
+        echo "$(date -Is) schválené, podpis overený lokálne" >> "$LOG"
+        exit 0
+      fi
+      echo "$(date -Is) POZOR: backend hlási approved, ale podpis neprešiel lokálnym overením" >> "$LOG"
+      # this should never happen unless the backend lies: loud alarm
+      curl -s -m 5 "${RESOLVE[@]}" -X POST "${NTFY_PUBLIC_URL}/${NTFY_TOPIC}" \
+        -H "Authorization: Bearer ${NTFY_REPORTER_TOKEN}" \
+        -H "Title: POPLACH sudo-approve na $HOST" -H "Priority: urgent" -H "Tags: rotating_light" \
+        -d "Backend hlasil approved bez platneho podpisu. Mozny napadnuty sudo-approve. Sudo NEPUSTENE." >/dev/null 2>&1
+      exit 1 ;;
     expired|unknown) exit 1 ;;
   esac
 done

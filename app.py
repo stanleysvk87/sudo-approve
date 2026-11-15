@@ -1,4 +1,7 @@
+import base64
+import json
 import os
+import re
 import secrets
 import sqlite3
 import time
@@ -55,6 +58,11 @@ def init_db():
             created_at REAL NOT NULL
         )"""
     )
+    # v2: the PAM side chooses the WebAuthn challenge and verifies the assertion itself; we only relay it
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(challenges)")}
+    for col in ("expect", "assertion"):
+        if col not in cols:
+            conn.execute(f"ALTER TABLE challenges ADD COLUMN {col} TEXT")
     conn.commit()
     conn.close()
 
@@ -281,12 +289,17 @@ approve();
 async def create_challenge(request: Request):
     body = await request.json()
     challenge_id = secrets.token_urlsafe(16)
+    # v2: "challenge" = base64url of 32 bytes the PAM side derived from its own nonce, host and command. The
+    # authenticator signs exactly these bytes, so a backend that lies cannot produce an approval the PAM side accepts.
+    expect = body.get("challenge")
+    if expect is not None and not (isinstance(expect, str) and re.fullmatch(r"[A-Za-z0-9_-]{43}", expect)):
+        raise HTTPException(400, "challenge must be 32 bytes base64url")
     conn = db()
     # priebezne cistenie starych zaznamov, aby tabulka nerastla neobmedzene
     conn.execute("DELETE FROM challenges WHERE created_at < ?", (time.time() - 86400,))
     conn.execute(
-        "INSERT INTO challenges (id, status, host, command, created_at) VALUES (?,?,?,?,?)",
-        (challenge_id, "pending", body.get("host", "?"), body.get("command", "sudo"), time.time()),
+        "INSERT INTO challenges (id, status, host, command, created_at, expect) VALUES (?,?,?,?,?,?)",
+        (challenge_id, "pending", body.get("host", "?"), body.get("command", "sudo"), time.time(), expect),
     )
     conn.commit()
     conn.close()
@@ -322,7 +335,10 @@ def approve_begin(challenge_id: str):
     if not creds:
         raise HTTPException(400, "ziadny zaregistrovany kluc")
 
-    options, state = server.authenticate_begin(creds, user_verification="preferred")
+    challenge = None
+    if row["expect"]:
+        challenge = base64.urlsafe_b64decode(row["expect"] + "=")
+    options, state = server.authenticate_begin(creds, user_verification="preferred", challenge=challenge)
     _auth_states[challenge_id] = (state, time.time())
     return JSONResponse({"publicKey": to_json(options["publicKey"])})
 
@@ -349,7 +365,19 @@ async def approve_complete(challenge_id: str, request: Request):
         conn.close()
         raise HTTPException(400, f"overenie zlyhalo: {e}")
 
-    conn.execute("UPDATE challenges SET status='approved' WHERE id=?", (challenge_id,))
+    # keep the raw assertion for the PAM side to verify on its own (v2)
+    resp = body.get("response") or {}
+    assertion = json.dumps(
+        {
+            "rawId": body.get("rawId"),
+            "clientDataJSON": resp.get("clientDataJSON"),
+            "authenticatorData": resp.get("authenticatorData"),
+            "signature": resp.get("signature"),
+        }
+    )
+    conn.execute(
+        "UPDATE challenges SET status='approved', assertion=? WHERE id=?", (assertion, challenge_id)
+    )
     conn.commit()
     conn.close()
     return {"ok": True}
@@ -364,4 +392,7 @@ def challenge_status(challenge_id: str):
         return {"status": "unknown"}
     if row["status"] == "pending" and time.time() - row["created_at"] > CHALLENGE_TTL:
         return {"status": "expired"}
-    return {"status": row["status"]}
+    out = {"status": row["status"]}
+    if row["status"] == "approved" and row["assertion"]:
+        out["assertion"] = json.loads(row["assertion"])
+    return out

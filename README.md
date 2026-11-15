@@ -57,6 +57,10 @@ have, not a replacement.
 - **`pam/sudo-remote-approve.sh`** — the `pam_exec` script deployed to every
   machine you want this on. Creates a challenge, sends the push, polls for
   approval.
+- **`pam/sudo-approve-verify.py`** — verifies the WebAuthn assertion on the
+  machine itself (v2), against public keys pinned in a root-owned file.
+- **`pam/export-credentials.py`** — exports the registered public keys for
+  that pinned file.
 - **`docker-compose.yml` / `Dockerfile`** — runs the backend as a non-root
   user in a container.
 
@@ -101,6 +105,16 @@ approve `sudo` without the second factor and run code as root. The script theref
 The same rule applies to a TOTP fallback: keep `pam_google_authenticator` secrets outside the user's home
 (`secret=/etc/sudo-approve/totp/${USER} user=root`).
 
+### 3c. Pin the approving keys (v2, root only)
+
+```bash
+python3 pam/export-credentials.py data/sudo-approve.db > credentials.json   # review names and count
+sudo install -o root -g root -m 644 credentials.json /etc/sudo-approve/credentials.json
+sudo install -o root -g root -m 755 pam/sudo-approve-verify.py /usr/local/bin/sudo-approve-verify
+```
+
+Repeat after registering a new key. Only keys in this file can approve `sudo` on that machine.
+
 ### 4. Wire it into PAM
 
 Add a line to `/etc/pam.d/sudo`, positioned wherever you want it tried
@@ -124,6 +138,26 @@ attacker spamming approval requests until someone taps "yes" by reflex).
 
 `/register` is gated by `SETUP_TOKEN` so registering a new credential
 requires knowing that token, not just being on the right subnet.
+
+**v2 – the backend is only a relay.** v1 trusted the backend's answer
+(`"status": "approved"`): whoever controlled the backend container – or could
+write its SQLite file and add a credential – could approve any `sudo`. Now:
+
+- the PAM side picks the WebAuthn challenge itself:
+  `SHA-256("sudo-approve/v2" 0 host 0 command 0 nonce)`, a fresh 32-byte nonce
+  each time;
+- the backend passes the raw assertion through;
+- `sudo-approve-verify` checks it locally (W3C WebAuthn §7.2: clientData type,
+  challenge, origin, rpIdHash, User Present flag, signature) against keys
+  pinned in `/etc/sudo-approve/credentials.json` (root-owned).
+
+A lying backend can refuse, never approve; an approval for another command,
+host or an older request does not verify. If the backend says "approved" and
+the signature does not check out, the script refuses and sends a loud alarm.
+One limit remains: the approval page shows the command as the backend tells
+it, so a compromised backend could display a harmless command for a request
+that is really something else – but only for a `sudo` someone actually typed
+on that machine. Tests: `python3 pam/test_verify.py`.
 
 This is a homelab project, not an audited security product. Read the code
 before trusting it with anything that matters.
